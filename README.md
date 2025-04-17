@@ -1,20 +1,107 @@
-# Chat2VIS
-Streamlit application https://chat2vis.streamlit.app/
+# Advanced Document Analyzer
 
-This repository has no license.  In accordance with GitHub documentation, the default copyright laws apply. This means that the owner retains all rights to the source code and no one may reproduce, distribute, or create derivative works from this work.
+A powerful Streamlit application for analyzing documents with AI-powered insights and visualizations. Supports both Word documents (.docx) and Excel files (.xlsx, .xls).
 
-If citing or using code within this repository, please cite our publication https://doi.org/10.1109/ACCESS.2023.3274199:
+## Features
 
-P. Maddigan and T. Susnjak, "Chat2VIS: Generating Data Visualizations via Natural Language Using ChatGPT, Codex and GPT-3 Large Language Models," in IEEE Access, vol. 11, pp. 45181-45193, 2023, doi: 10.1109/ACCESS.2023.3274199.
+- **Multi-format Support**
+  - Word documents (.docx)
+  - Excel files (.xlsx, .xls)
 
-Links to Blogs:
+- **Document Analysis**
+  - Structure analysis
+  - Content analysis
+  - Language detection
+  - Sentiment analysis
+  - Named entity recognition
+  - Topic modeling
 
-[Comparing data visualisations from Code Llama, GPT-3.5, and GPT-4](https://blog.streamlit.io/comparing-code-llama-vs-gpt-3-5-and-gpt-4-to-generate-visualisations/)  (Streamlit)
+- **Interactive Visualizations**
+  - Customizable Word Clouds
+  - Entity Relationship Networks
+  - Topic-Keyword Heatmaps
+  - Document Flow Analysis
+  - Sentiment Analysis Plots
+  - Document Comparison Tools
 
-[Showcasing Code Llama, GPT-3.5 Instruct, and GPT-4 for generating data visualisations](https://medium.com/@paula_m/showcasing-code-llama-gpt-3-5-instruct-and-gpt-4-for-generating-data-visualisations-f8a959729c70) (Medium)
+- **AI-Powered Insights**
+  - Natural language queries
+  - Content recommendations
+  - Structure analysis
+  - Comparative analysis
 
-[Chat2VIS: AI-driven visualisations with Streamlit and natural language](https://blog.streamlit.io/chat2vis-ai-driven-visualisations-with-streamlit-and-natural-language/)  (Streamlit)
+## Installation
 
-[Chat2VIS: AI-driven data visualisations with Streamlit, ChatGPT and natural language](https://medium.com/@paula_m/chat2vis-ai-driven-data-visualisations-with-streamlit-chatgpt-and-natural-language-d70a8e41b9d4) (Medium)
+1. Clone the repository:
+```bash
+git clone [repository-url]
+cd Text_Analyzer
+```
 
-[Chat2VIS — Generating Data Visualisations from Natural Language Text using GPT-3 and ChatGPT](https://medium.com/@paula_m/chat2vis-generating-data-visualisations-from-natural-language-text-using-gpt-3-and-chatgpt-7f968d4dac78) (Medium)
+2. Install required packages:
+```bash
+pip install -r requirements.txt
+```
+
+3. Run the application:
+```bash
+streamlit run app.py
+```
+
+## Usage
+
+1. Launch the application
+2. Upload one or more documents (.docx, .xlsx, .xls)
+3. Choose an analysis type from the sidebar:
+   - Document Structure
+   - Content Analysis
+   - Language Analysis
+   - Comparative Analysis
+   - Advanced Visualizations
+4. Use the customization options to adjust visualizations:
+   - Modify colors, sizes, and styles
+   - Add/remove stopwords
+   - Adjust topic numbers and keywords
+   - Customize chart titles and labels
+
+## Visualization Customization
+
+### Word Cloud
+- Title customization
+- Background color selection
+- Color scheme options
+- Size adjustments
+- Custom stopwords
+
+### Entity Network
+- Title customization
+- Node size and colors
+- Edge width and colors
+- Layout options
+
+### Topic Analysis
+- Number of topics
+- Keywords per topic
+- Color scheme
+- Title customization
+
+### Document Flow
+- Title and axis labels
+- Line colors and styles
+- Metric customization
+
+## Requirements
+
+- Python 3.8+
+- Streamlit
+- spaCy
+- pandas
+- numpy
+- plotly
+- textblob
+- gensim
+- And other dependencies listed in requirements.txt
+
+## License
+
+MIT License
