@@ -1,22 +1,19 @@
 streamlit
-nltk
-spacy
+spacy==3.7.4
+en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.7.1/en_core_web_sm-3.7.1-py3-none-any.whl
 matplotlib
 scikit-learn
 wordcloud
 python-docx
-networkx
-scattertext
-pandas
 openpyxl
+networkx
+pandas
 gensim
 textstat
 sumy
 plotly
 seaborn
 textblob
-spacy-streamlit
-en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.7.1/en_core_web_sm-3.7.1-py3-none-any.whl
 beautifulsoup4
 ftfy
 contractions
@@ -26,8 +23,3 @@ langdetect
 requests
 anthropic
 python-dotenv
-transformers
-torch
-datasets
-accelerate
-optuna
