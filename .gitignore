@@ -32,8 +32,8 @@ env/
 *.swp
 *.swo
 
-# Streamlit
-.streamlit/
+# Streamlit (ignore secrets but keep theme config)
+.streamlit/secrets.toml
 
 # OS
 .DS_Store

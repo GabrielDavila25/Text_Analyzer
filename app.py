@@ -11,6 +11,8 @@ st.set_page_config(
     }
 )
 
+import math
+import os
 import spacy
 import matplotlib.pyplot as plt
 import networkx as nx
@@ -45,8 +47,82 @@ from sklearn.cluster import DBSCAN
 import plotly.figure_factory as ff
 from chatbot import get_text_completion, render_structured_output
 
-# Load spaCy model
-nlp = spacy.load('en_core_web_sm')
+# --- Custom CSS ---
+st.markdown("""
+<style>
+    /* Page background */
+    .main .block-container { padding-top: 1.5rem; }
+
+    /* Header banner */
+    .app-header {
+        background: linear-gradient(135deg, #0d1b2e 0%, #1a3a5c 100%);
+        padding: 2rem 2.5rem;
+        border-radius: 14px;
+        margin-bottom: 1.8rem;
+        text-align: center;
+        color: #e2e8f0;
+        box-shadow: 0 4px 24px rgba(0,0,0,0.4);
+        border: 1px solid #2d4a6e;
+    }
+    .app-header h1 { font-size: 2.1rem; margin: 0; letter-spacing: 0.3px; font-weight: 700; }
+    .app-header p  { margin: 0.5rem 0 0; opacity: 0.75; font-size: 1rem; }
+
+    /* Metric cards */
+    [data-testid="metric-container"] {
+        background: #1a1f2e;
+        border: 1px solid #2d3748;
+        border-radius: 10px;
+        padding: 0.8rem 1rem;
+    }
+
+    /* Section headings */
+    h3 { color: #7db0f7; border-bottom: 1px solid #2d3748; padding-bottom: 0.35rem; margin-top: 1.2rem; }
+
+    /* Sidebar refinements */
+    [data-testid="stSidebar"] > div:first-child { padding-top: 1.2rem; }
+    [data-testid="stSidebar"] hr { border-color: #2d3748; }
+
+    /* Tab active state */
+    .stTabs [data-baseweb="tab"][aria-selected="true"] {
+        border-bottom: 3px solid #4f8ef7;
+        color: #7db0f7;
+        font-weight: 700;
+    }
+
+    /* AI response box */
+    .ai-box {
+        background: #101828;
+        border-left: 4px solid #4f8ef7;
+        border-radius: 0 10px 10px 0;
+        padding: 1rem 1.3rem;
+        margin-top: 0.6rem;
+        color: #e2e8f0;
+        line-height: 1.65;
+    }
+
+    /* Summary card */
+    .summary-card {
+        background: #0d1f18;
+        border-left: 4px solid #48bb78;
+        border-radius: 0 10px 10px 0;
+        padding: 1rem 1.3rem;
+        margin: 0.5rem 0 1.2rem;
+        color: #c6f6d5;
+        line-height: 1.6;
+    }
+    .summary-card strong { color: #68d391; }
+
+    /* Stat table */
+    [data-testid="stDataFrame"] { border-radius: 8px; overflow: hidden; }
+</style>
+""", unsafe_allow_html=True)
+
+# --- spaCy model (cached so it loads once) ---
+@st.cache_resource
+def _load_nlp():
+    return spacy.load('en_core_web_sm')
+
+nlp = _load_nlp()
 
 # Custom stopwords (keeping the existing ones)
 extended_filler_words = {
@@ -65,13 +141,173 @@ extended_stopwords = {
 
 custom_stopwords = extended_filler_words.union(extended_stopwords)
 
-def create_wordcloud(text: str, custom_title: str = "Word Cloud", additional_stopwords: set = set(), 
-                    background_color: str = 'white', colormap: str = 'viridis', 
-                    width: int = 800, height: int = 400):
-    """Create and display an enhanced word cloud visualization with customization options."""
-    # Combine default stopwords with user-provided ones
+# ---------------------------------------------------------------------------
+# YPAR / CPIM Framework
+# ---------------------------------------------------------------------------
+
+INTERVIEWER_LABELS = {
+    'l', 's', 'i', 'int', 'interviewer', 'researcher', 'r', 'moderator',
+    'facilitator', 'q', 'interviewer1', 'interviewer2',
+}
+
+# Matches inline "Firstname Lastname HH:MM" or "Firstname HH:MM" from auto-transcription tools
+_INLINE_SPEAKER_RE = re.compile(
+    r'([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)\s+(\d{1,2}:\d{2})\b\s*'
+)
+
+YPAR_THEMES = {
+    "Spatial Justice": [
+        "map", "space", "place", "neighborhood", "location", "geographic",
+        "area", "district", "zone", "redlining", "segregation", "geography",
+        "city", "urban", "street", "block", "environment",
+    ],
+    "Agency & Voice": [
+        "i think", "i feel", "i want", "i believe", "we can", "we should",
+        "action", "change", "impact", "power", "voice", "speak", "decide",
+        "choice", "advocate", "demand", "fight", "stand",
+    ],
+    "Systemic Inequity": [
+        "unfair", "inequality", "inequity", "system", "structure", "barrier",
+        "access", "privilege", "discriminat", "bias", "oppression", "justice",
+        "racism", "poverty", "resource", "lack", "denied", "excluded",
+    ],
+    "Mathematical Thinking": [
+        "data", "number", "statistic", "percent", "ratio", "measure",
+        "calculate", "graph", "pattern", "trend", "count", "quantit",
+        "math", "chart", "average", "rate", "frequency",
+    ],
+    "Community": [
+        "community", "family", "neighbor", "together", "belong",
+        "connect", "support", "relationship", "people", "group",
+        "network", "local", "around us", "each other",
+    ],
+    "Educational Experience": [
+        "school", "class", "teacher", "learn", "grade", "college",
+        "university", "student", "education", "curriculum", "course",
+        "classroom", "homework", "test", "gpa", "graduate",
+    ],
+    "Identity & Culture": [
+        "identity", "culture", "background", "race", "ethnicity",
+        "gender", "immigrant", "first-generation", "who i am", "heritage",
+        "language", "tradition", "belief", "faith",
+    ],
+    "Participatory Action": [
+        "research", "project", "interview", "action", "investigate",
+        "analyze", "present", "share", "participate", "ypar",
+        "finding", "recommendation", "survey", "question",
+    ],
+}
+
+
+def _normalize_transcript(text: str) -> str:
+    """
+    Convert inline auto-transcript markers like 'Stephen Caviness 06:41 text...'
+    into proper newline-separated speaker turns: 'Stephen Caviness: text...'
+    This handles output from Otter.ai, Teams, Zoom, etc.
+    """
+    return _INLINE_SPEAKER_RE.sub(lambda m: f'\n{m.group(1)}: ', text)
+
+
+def _is_interviewer(speaker: str) -> bool:
+    """
+    Return True if a speaker label looks like the interviewer.
+    Rules (in order):
+      1. Matches a known interviewer label (l, i, int, ...)
+      2. Is a full name with a space — auto-transcription tools embed the
+         interviewer's full name (e.g. 'Stephen Caviness') while students
+         get single-letter codes ('A', 'D', 'S').
+    """
+    if speaker.lower() in INTERVIEWER_LABELS:
+        return True
+    # Full name = two or more capitalized words, no digits
+    parts = speaker.strip().split()
+    if len(parts) >= 2 and all(p.replace('.', '').isalpha() for p in parts):
+        return True
+    return False
+
+
+def is_interview(text: str) -> bool:
+    """Detect whether a document looks like an interview transcript."""
+    normalized = _normalize_transcript(text)
+    speaker_re = re.compile(r'^[A-Za-z][A-Za-z .]{0,20}:\s', re.MULTILINE)
+    return len(speaker_re.findall(normalized)) >= 5
+
+
+def parse_transcript(text: str) -> List[Dict]:
+    """
+    Parse a transcript into speaker turns, correctly handling:
+    - Simple labels:   'L: ...' / 'D: ...' / 'Willow: ...'
+    - Auto-transcript: inline 'Stephen Caviness 06:41 ...' markers
+    Each turn gets {'speaker', 'text', 'is_student'}.
+    """
+    text = _normalize_transcript(text)
+
+    lines = text.split('\n')
+    turns: List[Dict] = []
+    current_speaker: str = None
+    current_lines: List[str] = []
+
+    speaker_re = re.compile(r'^([A-Za-z][A-Za-z .]{0,25}):\s*(.*)')
+
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        m = speaker_re.match(line)
+        if m:
+            if current_speaker is not None and current_lines:
+                turns.append({'speaker': current_speaker,
+                               'text': ' '.join(current_lines).strip()})
+            current_speaker = m.group(1).strip()
+            rest = m.group(2).strip()
+            current_lines = [rest] if rest else []
+        elif current_speaker is not None:
+            current_lines.append(line)
+
+    if current_speaker is not None and current_lines:
+        turns.append({'speaker': current_speaker,
+                       'text': ' '.join(current_lines).strip()})
+
+    if not turns:
+        return turns
+
+    # Label each turn
+    interviewer_speakers = {t['speaker'] for t in turns if _is_interviewer(t['speaker'])}
+
+    # Last resort: if still nothing found, treat most-frequent speaker as interviewer
+    if not interviewer_speakers:
+        freq = Counter(t['speaker'] for t in turns)
+        interviewer_speakers = {freq.most_common(1)[0][0]}
+
+    for turn in turns:
+        turn['is_student'] = turn['speaker'] not in interviewer_speakers
+
+    return turns
+
+
+def get_student_text(turns: List[Dict]) -> str:
+    return ' '.join(t['text'] for t in turns if t.get('is_student'))
+
+
+def get_interviewer_text(turns: List[Dict]) -> str:
+    return ' '.join(t['text'] for t in turns if not t.get('is_student'))
+
+
+def score_ypar_themes(text: str) -> Dict[str, int]:
+    """Count keyword hits per YPAR/CPIM theme."""
+    text_lower = text.lower()
+    return {
+        theme: sum(text_lower.count(kw) for kw in keywords)
+        for theme, keywords in YPAR_THEMES.items()
+    }
+
+
+def create_wordcloud(text: str, custom_title: str = "Word Cloud", additional_stopwords: set = set(),
+                    background_color: str = '#0f1117', colormap: str = 'Blues',
+                    width: int = 900, height: int = 420):
+    """Create and display a word cloud visualization."""
     all_stopwords = custom_stopwords.union(STOPWORDS).union(additional_stopwords)
-    
+
     wordcloud = WordCloud(
         width=width,
         height=height,
@@ -80,13 +316,13 @@ def create_wordcloud(text: str, custom_title: str = "Word Cloud", additional_sto
         stopwords=all_stopwords,
         min_font_size=10,
         max_font_size=150,
-        random_state=42
+        random_state=42,
     ).generate(text)
-    
-    fig = plt.figure(figsize=(10, 5))
+
+    fig = plt.figure(figsize=(11, 4.5), facecolor=background_color)
     plt.imshow(wordcloud, interpolation='bilinear')
     plt.axis('off')
-    plt.title(custom_title, pad=20, fontsize=14)
+    plt.title(custom_title, pad=12, fontsize=13, color='#e2e8f0')
     st.pyplot(fig)
 
 def create_entity_network(text: str, custom_title: str = "Entity Relationship Network",
@@ -106,7 +342,6 @@ def create_entity_network(text: str, custom_title: str = "Entity Relationship Ne
     seen_entities = set()
     
     # Calculate node positions in a circular layout
-    import math
     num_entities = len(set(ent[0] for ent in entities))
     radius = 1
     angle_step = 2 * math.pi / num_entities
@@ -431,44 +666,52 @@ def detect_outliers(texts: List[str]) -> List[int]:
     # Return indices of outliers (-1 in labels indicates outliers)
     return [i for i, label in enumerate(clustering.labels_) if label == -1]
 
-def analyze_document(file) -> Dict:
+def generate_summary(text: str, num_sentences: int = 5) -> str:
+    """Extractive summary using LSA (sumy)."""
+    try:
+        parser = PlaintextParser.from_string(text, Tokenizer("english"))
+        summarizer = LsaSummarizer()
+        sentences = summarizer(parser.document, num_sentences)
+        return " ".join(str(s) for s in sentences)
+    except Exception:
+        return ""
+
+
+@st.cache_data(show_spinner=False)
+def analyze_document(file_name: str, file_bytes: bytes, file_ext: str) -> Dict:
     """Process and analyze a document with enhanced cleaning and structure analysis."""
     try:
-        if file.name.endswith(('.xlsx', '.xls')):
-            # Read Excel file
-            df = pd.read_excel(BytesIO(file.read()))
-            # Convert DataFrame to text
-            original_text = '\n\n'.join([
-                f"{col}:\n{'\n'.join(df[col].astype(str))}"
+        if file_ext in ('.xlsx', '.xls'):
+            df = pd.read_excel(BytesIO(file_bytes))
+            original_text = '\n\n'.join(
+                f"{col}:\n" + '\n'.join(df[col].astype(str))
                 for col in df.columns
-            ])
+            )
         else:
-            # Process DOCX file
-            doc = Document(BytesIO(file.read()))
-            original_text = '\n'.join([para.text for para in doc.paragraphs])
+            doc = Document(BytesIO(file_bytes))
+            original_text = '\n'.join(para.text for para in doc.paragraphs)
     except Exception as e:
-        st.error(f"Error processing {file.name}: {e}")
+        st.error(f"Error processing {file_name}: {e}")
         return None
 
-    # Detect language
     language = detect_language(original_text)
-    
-    # Analyze structure
     structure_analysis = analyze_text_structure(original_text)
-    
-    # Clean text (both aggressive and light versions)
     cleaned_text_light = clean_text(original_text, aggressive=False)
     cleaned_text_aggressive = clean_text(original_text, aggressive=True)
 
-    # Perform sentiment analysis
-    sentiment, polarity, subjectivity = analyze_sentiment(cleaned_text_aggressive)
-    
-    # Get document statistics
+    # Interview-aware processing
+    interview = is_interview(original_text)
+    turns = parse_transcript(original_text) if interview else []
+    student_text = get_student_text(turns) if turns else cleaned_text_light
+    interviewer_text = get_interviewer_text(turns) if turns else ""
+
+    # Sentiment on student voice (or full text for non-interviews)
+    sentiment, polarity, subjectivity = analyze_sentiment(student_text)
     stats = get_document_stats(cleaned_text_light)
-    
-    # Extract named entities
-    entities = extract_named_entities(cleaned_text_light)
-    
+    entities = extract_named_entities(student_text)
+    summary = generate_summary(student_text)
+    ypar_themes = score_ypar_themes(student_text)
+
     return {
         'original_text': original_text,
         'cleaned_text_light': cleaned_text_light,
@@ -479,7 +722,13 @@ def analyze_document(file) -> Dict:
         'polarity': polarity,
         'subjectivity': subjectivity,
         'stats': stats,
-        'entities': entities
+        'entities': entities,
+        'summary': summary,
+        'is_interview': interview,
+        'turns': turns,
+        'student_text': student_text,
+        'interviewer_text': interviewer_text,
+        'ypar_themes': ypar_themes,
     }
 
 def analyze_sentiment(text):
@@ -522,150 +771,149 @@ def extract_named_entities(text):
         })
     return entities
 
-# Streamlit UI
-st.markdown("<h1 style='text-align: center; color: darkblue;'>Advanced Document Analyzer</h1>", unsafe_allow_html=True)
-st.markdown("<p style='text-align: center;'>Upload and analyze documents with advanced cleaning and structure analysis</p>", unsafe_allow_html=True)
+# --- Header ---
+st.markdown("""
+<div class="app-header">
+    <h1>📄 Advanced Document Analyzer</h1>
+    <p>Upload research documents for AI-powered analysis, visualizations, and insights</p>
+</div>
+""", unsafe_allow_html=True)
 
-uploaded_files = st.file_uploader("Upload Documents (.docx, .xlsx, .xls)", type=["docx", "xlsx", "xls"], accept_multiple_files=True)
+# --- Sidebar ---
+with st.sidebar:
+    st.markdown("## Document Analyzer")
+    st.markdown("---")
+    uploaded_files = st.file_uploader(
+        "Upload Documents",
+        type=["docx", "xlsx", "xls"],
+        accept_multiple_files=True,
+        help="Supports Word (.docx) and Excel (.xlsx, .xls) files",
+    )
+    st.markdown("---")
+    if st.button("🔄 Clear Cache & Reprocess", help="Run this after uploading new files or if results look stale"):
+        st.cache_data.clear()
+        st.rerun()
+    st.markdown("---")
+    st.markdown("### Analysis Options")
+
+uploaded_files = uploaded_files or []
 
 if uploaded_files:
     docs_data = {}
     all_cleaned_texts = []
     
-    # Process documents
+    # Process documents (cached by filename + content hash)
     with st.spinner("Processing documents..."):
         for file in uploaded_files:
-            result = analyze_document(file)
+            file_bytes = file.read()
+            ext = os.path.splitext(file.name)[1].lower()
+            result = analyze_document(file.name, file_bytes, ext)
             if result:
                 docs_data[file.name] = result
                 all_cleaned_texts.append(result['cleaned_text_aggressive'])
     
-    # Detect outliers
-    outliers = detect_outliers(all_cleaned_texts)
-    if outliers:
-        st.warning("⚠️ Potential outlier documents detected:")
-        for idx in outliers:
-            st.write(f"- {list(docs_data.keys())[idx]}")
-    
-    # Navigation
-    st.sidebar.markdown("### Analysis Options")
+    # Sidebar: show interview detection badge per document
+    interview_docs = [n for n, d in docs_data.items() if d.get('is_interview')]
+    if interview_docs:
+        st.sidebar.markdown("**Interview transcripts detected:**")
+        for name in interview_docs:
+            st.sidebar.caption(f"🎙 {name}")
+        st.sidebar.markdown("---")
+
     analysis_type = st.sidebar.selectbox(
         "Choose Analysis Type",
-        ["Document Structure", "Content Analysis", "Language Analysis", "Comparative Analysis", "Advanced Visualizations"]
+        [
+            "Document Structure",
+            "Content Analysis",
+            "Youth Voice",
+            "YPAR Theme Tracker",
+            "Language Analysis",
+            "Comparative Analysis",
+            "Advanced Visualizations",
+        ],
     )
     
     if analysis_type == "Document Structure":
-        for doc_name, doc_data in docs_data.items():
-            st.markdown(f"## {doc_name}")
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                st.markdown("### Structure Analysis")
-                structure = doc_data['structure_analysis']
-                
-                # Create gauge chart for structure metrics
-                fig = go.Figure(go.Indicator(
-                    mode = "gauge+number",
-                    value = structure['avg_sentence_length'],
-                    title = {'text': "Average Sentence Length"},
-                    gauge = {'axis': {'range': [0, 50]},
-                            'bar': {'color': "darkblue"},
-                            'steps': [
-                                {'range': [0, 20], 'color': "lightgray"},
-                                {'range': [20, 35], 'color': "gray"}]}))
-                st.plotly_chart(fig)
-                
-                # Structure metrics
-                metrics = {
-                    "Paragraphs": structure['num_paragraphs'],
-                    "Avg Paragraph Length": f"{structure['avg_paragraph_length']:.1f}",
-                    "Sentences": structure['num_sentences'],
-                    "Noise Ratio": f"{structure['noise_ratio']:.2%}"
-                }
-                
-                for metric, value in metrics.items():
-                    st.metric(metric, value)
-                
-                if structure['issues']:
-                    st.markdown("#### Structure Issues")
-                    for issue in structure['issues']:
-                        st.warning(issue)
-            
-            with col2:
-                st.markdown("### Document Statistics")
-                stats_df = pd.DataFrame.from_dict(doc_data['stats'], orient='index', columns=['Value'])
-                
-                # Create radar chart for key metrics
-                categories = ['Reading Time', 'Word Count', 'Flesch Reading Ease', 'Vocabulary Richness']
-                values = [
-                    doc_data['stats']['Reading Time (minutes)'],
-                    doc_data['stats']['Word Count'] / 1000,  # Normalize
-                    doc_data['stats']['Flesch Reading Ease'] / 100,  # Normalize
-                    doc_data['stats']['Vocabulary Richness'] / 100  # Already normalized
-                ]
-                
-                fig = go.Figure(data=go.Scatterpolar(
-                    r=values,
-                    theta=categories,
-                    fill='toself'
-                ))
-                
-                fig.update_layout(
-                    polar=dict(
-                        radialaxis=dict(
-                            visible=True,
-                            range=[0, 1]
-                        )),
-                    showlegend=False,
-                    title="Document Metrics Overview"
-                )
-                st.plotly_chart(fig)
-                
-                st.dataframe(stats_df)
-            
-            # Text versions with enhanced display
-            st.markdown("### Text Versions")
-            tabs = st.tabs(["Original", "Light Cleaning", "Aggressive Cleaning"])
-            with tabs[0]:
-                st.text_area("Original Text", doc_data['original_text'], height=200)
-                
-                # Temporal analysis customization
-                with st.expander("Document Flow Customization"):
-                    ta_col1, ta_col2 = st.columns(2)
-                    with ta_col1:
-                        ta_title = st.text_input("Flow Analysis Title", "Document Flow Analysis")
-                        ta_x_label = st.text_input("X-Axis Label", "Sentence Number")
-                    with ta_col2:
-                        ta_y_label = st.text_input("Y-Axis Label", "Metric Value")
-                        
-                    # Line colors and styles
-                    ta_colors = {
-                        'sentence_length': st.color_picker("Sentence Length Color", "#0000FF"),
-                        'entity_count': st.color_picker("Entity Count Color", "#FF0000"),
-                        'sentiment_score': st.color_picker("Sentiment Score Color", "#00FF00")
-                    }
-                    
-                    ta_styles = {
-                        'sentence_length': st.selectbox("Sentence Length Style", 
-                            ["solid", "dash", "dot", "dashdot"], key="sl_style"),
-                        'entity_count': st.selectbox("Entity Count Style",
-                            ["solid", "dash", "dot", "dashdot"], key="ec_style"),
-                        'sentiment_score': st.selectbox("Sentiment Score Style",
-                            ["solid", "dash", "dot", "dashdot"], key="ss_style")
-                    }
-                
-                create_temporal_analysis(
-                    doc_data['original_text'],
-                    custom_title=ta_title,
-                    colors=ta_colors,
-                    line_styles=ta_styles,
-                    x_label=ta_x_label,
-                    y_label=ta_y_label
-                )
-            with tabs[1]:
-                st.text_area("Light Cleaning", doc_data['cleaned_text_light'], height=200)
-            with tabs[2]:
-                st.text_area("Aggressive Cleaning", doc_data['cleaned_text_aggressive'], height=200)
+        doc_choice = st.selectbox("Select Document", list(docs_data.keys()), key="struct_doc")
+        doc_name = doc_choice
+        doc_data = docs_data[doc_name]
+
+        if doc_data.get('summary'):
+            st.markdown(
+                f'<div class="summary-card"><strong>Auto Summary</strong><br><br>{doc_data["summary"]}</div>',
+                unsafe_allow_html=True,
+            )
+
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown("### Structure Analysis")
+            structure = doc_data['structure_analysis']
+
+            fig = go.Figure(go.Indicator(
+                mode="gauge+number",
+                value=structure['avg_sentence_length'],
+                title={'text': "Avg Sentence Length (words)"},
+                gauge={
+                    'axis': {'range': [0, 50]},
+                    'bar': {'color': "#4f8ef7"},
+                    'steps': [
+                        {'range': [0, 15], 'color': "#1a2744"},
+                        {'range': [15, 30], 'color': "#1e3a6e"},
+                    ],
+                },
+            ))
+            fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", font_color="#e2e8f0", height=260)
+            st.plotly_chart(fig, use_container_width=True)
+
+            m1, m2 = st.columns(2)
+            m1.metric("Paragraphs", structure['num_paragraphs'])
+            m2.metric("Sentences", structure['num_sentences'])
+            m3, m4 = st.columns(2)
+            m3.metric("Avg Para Length", f"{structure['avg_paragraph_length']:.1f} w")
+            m4.metric("Noise Ratio", f"{structure['noise_ratio']:.2%}")
+
+            if structure['issues']:
+                st.markdown("#### Detected Issues")
+                for issue in structure['issues']:
+                    st.warning(issue)
+
+        with col2:
+            st.markdown("### Document Statistics")
+            stats_df = pd.DataFrame.from_dict(doc_data['stats'], orient='index', columns=['Value'])
+
+            categories = ['Reading Time', 'Word Count', 'Flesch Reading Ease', 'Vocabulary Richness']
+            values = [
+                doc_data['stats']['Reading Time (minutes)'],
+                doc_data['stats']['Word Count'] / 1000,
+                doc_data['stats']['Flesch Reading Ease'] / 100,
+                doc_data['stats']['Vocabulary Richness'] / 100,
+            ]
+
+            fig = go.Figure(data=go.Scatterpolar(r=values, theta=categories, fill='toself',
+                                                  line_color='#4f8ef7', fillcolor='rgba(79,142,247,0.2)'))
+            fig.update_layout(
+                polar=dict(radialaxis=dict(visible=True, range=[0, 1], color='#7db0f7'),
+                           bgcolor='rgba(0,0,0,0)'),
+                showlegend=False,
+                title=dict(text="Metrics Radar", font=dict(color='#e2e8f0')),
+                paper_bgcolor='rgba(0,0,0,0)',
+                font_color='#e2e8f0',
+                height=300,
+            )
+            st.plotly_chart(fig, use_container_width=True)
+            st.dataframe(stats_df, use_container_width=True)
+
+        st.markdown("### Document Flow Analysis")
+        create_temporal_analysis(doc_data['original_text'])
+
+        st.markdown("### Text Versions")
+        tabs = st.tabs(["Original", "Light Cleaning", "Aggressive Cleaning"])
+        with tabs[0]:
+            st.text_area("Original Text", doc_data['original_text'], height=220, key="orig_text")
+        with tabs[1]:
+            st.text_area("Light Cleaning", doc_data['cleaned_text_light'], height=220, key="light_text")
+        with tabs[2]:
+            st.text_area("Aggressive Cleaning", doc_data['cleaned_text_aggressive'], height=220, key="agg_text")
             
     
         # Add AI Analysis section for document structure after displaying all documents
@@ -754,8 +1002,8 @@ if uploaded_files:
                 if "error" not in response:
                     # Create a chat-like interface
                     with st.container():
-                        st.markdown("**🤖 AI Assistant:**")
-                        st.markdown(response.get("response", "No response generated"))
+                        ai_text = response.get("response", "No response generated")
+                        st.markdown(f'<div class="ai-box"><strong>🤖 AI Assistant</strong><br><br>{ai_text}</div>', unsafe_allow_html=True)
                         
                         # Add analysis options
                         col1, col2 = st.columns(2)
@@ -981,8 +1229,8 @@ if uploaded_files:
                 if "error" not in response:
                     # Create a chat-like interface
                     with st.container():
-                        st.markdown("**🤖 AI Assistant:**")
-                        st.markdown(response.get("response", "No response generated"))
+                        ai_text = response.get("response", "No response generated")
+                        st.markdown(f'<div class="ai-box"><strong>🤖 AI Assistant</strong><br><br>{ai_text}</div>', unsafe_allow_html=True)
                         
                         # Add follow-up analysis options
                         col1, col2 = st.columns(2)
@@ -1026,6 +1274,302 @@ if uploaded_files:
                 else:
                     st.error(response["error"])
     
+    elif analysis_type == "Youth Voice":
+        interviews = {n: d for n, d in docs_data.items() if d.get('is_interview')}
+        non_interviews = {n: d for n, d in docs_data.items() if not d.get('is_interview')}
+
+        if non_interviews and not interviews:
+            st.info("No interview transcripts detected in your uploaded documents. "
+                    "Youth Voice analysis works best with interview files that use "
+                    "speaker labels like  'L:', 'D:', or a name followed by a colon.")
+
+        target_docs = interviews if interviews else docs_data
+        doc_choice = st.selectbox("Select Interview", list(target_docs.keys()), key="yv_doc")
+        doc_data = target_docs[doc_choice]
+        turns_raw = doc_data.get('turns', [])
+
+        if turns_raw:
+            # ── Speaker override ────────────────────────────────────────────
+            all_speakers = sorted({t['speaker'] for t in turns_raw})
+            auto_interviewers = [s for s in all_speakers if _is_interviewer(s)]
+
+            with st.expander("⚙️ Speaker Settings — adjust if labels are wrong", expanded=False):
+                st.caption(
+                    "Auto-detected based on speaker label format. "
+                    "Single letters (L, S, I) and full names (Stephen Caviness) are assumed to be interviewers. "
+                    "Override here if needed."
+                )
+                interviewer_override = st.multiselect(
+                    "Treat these speakers as INTERVIEWERS:",
+                    options=all_speakers,
+                    default=auto_interviewers,
+                    key=f"iv_{doc_choice}",
+                )
+
+            override_set = set(interviewer_override)
+            # Re-label turns using the override (no cache needed — done in UI)
+            turns = [{**t, 'is_student': t['speaker'] not in override_set} for t in turns_raw]
+
+            # Recompute student text and theme scores from the override
+            student_text_override = get_student_text(turns)
+            theme_scores_override = score_ypar_themes(student_text_override)
+
+            # Build interviewer stopwords to block from word cloud
+            interviewer_name_words = set()
+            for sp in override_set:
+                for part in sp.split():
+                    interviewer_name_words.add(part.lower())
+
+            student_speakers = {t['speaker'] for t in turns if t['is_student']}
+            interviewer_speakers = override_set
+            student_turns = [t for t in turns if t['is_student']]
+            interviewer_turns = [t for t in turns if not t['is_student']]
+
+            # ── Turn breakdown ──────────────────────────────────────────────
+            st.markdown("### Speaker Turn Breakdown")
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Total Turns", len(turns))
+            c2.metric("Student Turns", len(student_turns))
+            c3.metric("Interviewer Turns", len(interviewer_turns))
+            avg_student_words = (
+                sum(len(t['text'].split()) for t in student_turns) / len(student_turns)
+                if student_turns else 0
+            )
+            c4.metric("Avg Student Words/Turn", f"{avg_student_words:.0f}")
+
+            fig_turns = go.Figure(go.Pie(
+                labels=["Student", "Interviewer"],
+                values=[len(student_turns), len(interviewer_turns)],
+                hole=0.45,
+                marker_colors=["#4f8ef7", "#48bb78"],
+            ))
+            fig_turns.update_layout(
+                paper_bgcolor="rgba(0,0,0,0)", font_color="#e2e8f0",
+                showlegend=True, height=280,
+                title=dict(text="Turn Distribution", font=dict(color="#e2e8f0")),
+            )
+            st.plotly_chart(fig_turns, use_container_width=True)
+
+            # ── Student voice word cloud ────────────────────────────────────
+            st.markdown("### Student Voice Word Cloud")
+            if student_text_override.strip():
+                create_wordcloud(
+                    student_text_override,
+                    custom_title="Student Voice — Most Frequent Words",
+                    additional_stopwords=interviewer_name_words,
+                )
+
+            # ── Transcript viewer ───────────────────────────────────────────
+            st.markdown("### Transcript")
+            view_mode = st.radio(
+                "Show turns from:", ["Student only", "Interviewer only", "Full transcript"],
+                horizontal=True, key="yv_view",
+            )
+            filtered = (
+                student_turns if view_mode == "Student only"
+                else interviewer_turns if view_mode == "Interviewer only"
+                else turns
+            )
+            for turn in filtered:
+                color = "#4f8ef7" if turn['is_student'] else "#48bb78"
+                st.markdown(
+                    f'<div style="border-left:3px solid {color};padding:0.4rem 0.8rem;'
+                    f'margin:0.3rem 0;border-radius:0 6px 6px 0;">'
+                    f'<strong style="color:{color}">{turn["speaker"]}</strong>&nbsp;&nbsp;'
+                    f'{turn["text"]}</div>',
+                    unsafe_allow_html=True,
+                )
+
+            # ── YPAR theme scores for this student ──────────────────────────
+            st.markdown("### YPAR Theme Presence (Student Voice)")
+            theme_scores = doc_data.get('ypar_themes', {})
+            if theme_scores_override:
+                theme_df = pd.DataFrame(
+                    list(theme_scores_override.items()), columns=["Theme", "Score"]
+                ).sort_values("Score", ascending=True)
+                fig_theme = px.bar(
+                    theme_df, x="Score", y="Theme", orientation="h",
+                    color="Score", color_continuous_scale="Blues",
+                    title="Keyword Hits per YPAR Theme",
+                )
+                fig_theme.update_layout(
+                    paper_bgcolor="rgba(0,0,0,0)", font_color="#e2e8f0",
+                    showlegend=False, coloraxis_showscale=False,
+                    xaxis_title="Keyword hits", yaxis_title="",
+                )
+                st.plotly_chart(fig_theme, use_container_width=True)
+
+            # ── AI quote bank ───────────────────────────────────────────────
+            st.markdown("### AI Quote Bank")
+            st.caption("Click to extract the most meaningful student quotes, organized by YPAR theme.")
+            if st.button("Extract Key Quotes", key="yv_quotes"):
+                with st.spinner("Claude is reading the student's words..."):
+                    quote_prompt = (
+                        f"You are analyzing a YPAR (Youth Participatory Action Research) interview. "
+                        f"Below is what the STUDENT said (interviewer turns removed).\n\n"
+                        f"Student text:\n{student_text_override[:6000]}\n\n"
+                        f"Task: Extract 2-3 of the most significant, direct quotes from the student "
+                        f"for each of these CPIM/YPAR themes where relevant: "
+                        f"Spatial Justice, Agency & Voice, Systemic Inequity, Mathematical Thinking, "
+                        f"Community, Educational Experience, Identity & Culture, Participatory Action.\n\n"
+                        f"Format each theme as a markdown header with bullet-point quotes. "
+                        f"Only include themes where you found real evidence. Use the student's exact words."
+                    )
+                    qr = get_text_completion(query=quote_prompt)
+                    if "error" not in qr:
+                        st.markdown(
+                            f'<div class="ai-box">{qr.get("response","")}</div>',
+                            unsafe_allow_html=True,
+                        )
+                    else:
+                        st.error(qr["error"])
+
+            # ── AI open question ────────────────────────────────────────────
+            st.markdown("### Ask About This Student")
+            question = st.text_input("Your question:", key="yv_q",
+                                      placeholder="What does this student think about their school community?")
+            if question:
+                with st.spinner("Analyzing..."):
+                    ctx = {
+                        "student_speaker": ", ".join(student_speakers),
+                        "student_text_sample": student_text_override[:5000],
+                        "ypar_theme_scores": theme_scores_override,
+                        "total_student_turns": len(student_turns),
+                    }
+                    resp = get_text_completion(
+                        query=f"YPAR interview analysis. Student speaker(s): {', '.join(student_speakers)}.\n\nQuestion: {question}",
+                        document_context=ctx,
+                    )
+                    if "error" not in resp:
+                        st.markdown(
+                            f'<div class="ai-box">{resp.get("response","")}</div>',
+                            unsafe_allow_html=True,
+                        )
+                    else:
+                        st.error(resp["error"])
+        else:
+            st.info("This document wasn't detected as an interview transcript. "
+                    "Make sure speaker turns use a format like  'L: text' or 'Willow: text'.")
+
+    elif analysis_type == "YPAR Theme Tracker":
+        st.markdown("### YPAR / CPIM Theme Tracker")
+        st.caption(
+            "Heatmap of CPIM framework themes across all uploaded interviews — "
+            "student voice only. Higher values = more keyword hits."
+        )
+
+        # Build theme matrix — prefer student text, fall back to full text
+        theme_rows = []
+        for name, data in docs_data.items():
+            scores = data.get('ypar_themes') or score_ypar_themes(
+                data.get('student_text') or data.get('cleaned_text_light', '')
+            )
+            row = {"Document": name.replace('.docx', '').replace('.doc', '')}
+            row.update(scores)
+            theme_rows.append(row)
+
+        theme_matrix_df = pd.DataFrame(theme_rows).set_index("Document")
+
+        # Heatmap
+        fig_heat = px.imshow(
+            theme_matrix_df,
+            text_auto=True,
+            color_continuous_scale="Blues",
+            aspect="auto",
+            title="YPAR Theme Keyword Frequency (Student Voice)",
+            labels=dict(x="Theme", y="Interview", color="Hits"),
+        )
+        fig_heat.update_layout(
+            paper_bgcolor="rgba(0,0,0,0)", font_color="#e2e8f0",
+            xaxis_tickangle=-35,
+            coloraxis_colorbar=dict(title="Hits", tickfont=dict(color="#e2e8f0")),
+        )
+        st.plotly_chart(fig_heat, use_container_width=True)
+
+        # Dominant theme per student
+        st.markdown("### Dominant Theme per Interview")
+        dominant = []
+        for name, data in docs_data.items():
+            scores = data.get('ypar_themes', {})
+            if scores:
+                top = max(scores, key=scores.get)
+                dominant.append({
+                    "Interview": name.replace('.docx', ''),
+                    "Dominant Theme": top,
+                    "Score": scores[top],
+                })
+        if dominant:
+            dom_df = pd.DataFrame(dominant)
+            fig_dom = px.bar(
+                dom_df, x="Interview", y="Score", color="Dominant Theme",
+                title="Strongest YPAR Theme per Student",
+                color_discrete_sequence=px.colors.qualitative.Bold,
+            )
+            fig_dom.update_layout(
+                paper_bgcolor="rgba(0,0,0,0)", font_color="#e2e8f0",
+                xaxis_tickangle=-20, legend_title_text="Theme",
+            )
+            st.plotly_chart(fig_dom, use_container_width=True)
+
+        # Cross-interview theme totals
+        st.markdown("### Theme Totals Across All Interviews")
+        totals = theme_matrix_df.sum().sort_values(ascending=False).reset_index()
+        totals.columns = ["Theme", "Total Hits"]
+        fig_tot = px.bar(
+            totals, x="Total Hits", y="Theme", orientation="h",
+            color="Total Hits", color_continuous_scale="Blues",
+            title="Most Present Themes Across Corpus",
+        )
+        fig_tot.update_layout(
+            paper_bgcolor="rgba(0,0,0,0)", font_color="#e2e8f0",
+            showlegend=False, coloraxis_showscale=False,
+            yaxis=dict(autorange="reversed"),
+        )
+        st.plotly_chart(fig_tot, use_container_width=True)
+
+        # Dataframe download
+        with st.expander("Raw theme scores table"):
+            st.dataframe(theme_matrix_df, use_container_width=True)
+
+        # AI cross-interview synthesis
+        st.markdown("### AI Cross-Interview Synthesis")
+        st.caption("Ask Claude to synthesize patterns across the full interview corpus.")
+        synth_q = st.text_input(
+            "Question for Claude:", key="ypar_synth_q",
+            placeholder="What patterns emerge across students around spatial justice?",
+        )
+        if synth_q:
+            with st.spinner("Synthesizing across all interviews..."):
+                corpus_lines = []
+                for name, data in docs_data.items():
+                    scores = data.get('ypar_themes', {})
+                    top3 = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:3]
+                    corpus_lines.append(
+                        f"- {name.replace('.docx', '')}: "
+                        + ", ".join(f"{t} ({s} hits)" for t, s in top3)
+                    )
+
+                ctx = {
+                    "corpus_theme_summary": "\n".join(corpus_lines),
+                    "theme_matrix": theme_matrix_df.to_string(),
+                    "num_interviews": len(docs_data),
+                }
+                resp = get_text_completion(
+                    query=(
+                        f"You are analyzing a YPAR research corpus of {len(docs_data)} student interviews "
+                        f"through the CPIM (Computational-Participatory Intersection Model) framework.\n\n"
+                        f"Question: {synth_q}"
+                    ),
+                    document_context=ctx,
+                )
+                if "error" not in resp:
+                    st.markdown(
+                        f'<div class="ai-box">{resp.get("response","")}</div>',
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    st.error(resp["error"])
+
     elif analysis_type == "Language Analysis":
         st.markdown("### Language Detection Results")
         st.write("""
@@ -1120,8 +1664,8 @@ if uploaded_files:
                 if "error" not in response:
                     # Create a chat-like interface
                     with st.container():
-                        st.markdown("**🤖 AI Assistant:**")
-                        st.markdown(response.get("response", "No response generated"))
+                        ai_text = response.get("response", "No response generated")
+                        st.markdown(f'<div class="ai-box"><strong>🤖 AI Assistant</strong><br><br>{ai_text}</div>', unsafe_allow_html=True)
                         
                         # Add comparative analysis option
                         if st.button("Generate Comparative Analysis"):
@@ -1258,7 +1802,8 @@ if uploaded_files:
                     prompt = f"Question: {question}\n\n{comparison_summary}"
                     response = get_text_completion(prompt)
                     if "error" not in response:
-                        st.write(response.get("response", "No response generated"))
+                        ai_text = response.get("response", "No response generated")
+                        st.markdown(f'<div class="ai-box"><strong>🤖 AI Assistant</strong><br><br>{ai_text}</div>', unsafe_allow_html=True)
                     else:
                         st.error(response["error"])
         else:
@@ -1339,8 +1884,8 @@ if uploaded_files:
                 if "error" not in response:
                     # Create a chat-like interface
                     with st.container():
-                        st.markdown("**🤖 AI Assistant:**")
-                        st.markdown(response.get("response", "No response generated"))
+                        ai_text = response.get("response", "No response generated")
+                        st.markdown(f'<div class="ai-box"><strong>🤖 AI Assistant</strong><br><br>{ai_text}</div>', unsafe_allow_html=True)
                         
                         # Add visualization insights option
                         if st.button("Generate Visual Insights"):
@@ -1362,4 +1907,17 @@ if uploaded_files:
                     st.error(response["error"])
 
 else:
-    st.write("Please upload documents to analyze.")
+    st.info("Upload one or more documents using the sidebar to get started.")
+    st.markdown("""
+    **Supported formats:** Word (`.docx`) · Excel (`.xlsx`, `.xls`)
+
+    **What you get:**
+    - Auto-generated extractive summary
+    - Structure & readability metrics
+    - Sentiment analysis and language detection
+    - Named entity recognition and relationship network
+    - Topic modeling heatmap
+    - Document flow (sentence length / entity density / sentiment over time)
+    - Cross-document similarity and clustering
+    - AI-powered Q&A on any document or set of documents
+    """)

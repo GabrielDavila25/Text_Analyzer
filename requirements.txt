@@ -8,6 +8,7 @@ python-docx
 networkx
 scattertext
 pandas
+openpyxl
 gensim
 textstat
 sumy
@@ -22,6 +23,9 @@ contractions
 unidecode
 cleantext
 langdetect
+requests
+anthropic
+python-dotenv
 transformers
 torch
 datasets
